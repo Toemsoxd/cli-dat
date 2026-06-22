@@ -1,180 +1,264 @@
-// Micro-servidor traductor para revivir el widget de clima de Samsung (2014)
-// Desarrollado en Node.js puro (sin dependencias externas)
+const express = require('express');
+const axios = require('axios');
+const app = express();
 
-const http = require('http');
-const https = require('https');
-const url = require('url');
+// Middleware para logs rápidos en Render
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
 
-// Configuración del servidor (Render asigna dinámicamente el puerto usando process.env.PORT)
-const PORT = process.env.PORT || 8080; 
-const DEFAULT_LAT = "40.7128"; // Nueva York por defecto si el widget no envía coordenadas
-const DEFAULT_LON = "-74.0060";
-
-// Diccionario multi-idioma para los códigos de clima de Open-Meteo
-const CLIMA_CODIGOS = {
-    es: {
-        0: "Despejado",
-        1: "Principalmente despejado", 2: "Parcialmente nublado", 3: "Nublado",
-        45: "Niebla", 48: "Niebla escarchada",
-        51: "Llovizna ligera", 53: "Llovizna moderada", 55: "Llovizna densa",
-        61: "Lluvia débil", 63: "Lluvia moderada", 65: "Lluvia fuerte",
-        71: "Nieve débil", 73: "Nieve moderada", 75: "Nieve fuerte",
-        80: "Chubascos de lluvia débiles", 81: "Chubascos de lluvia moderados", 82: "Chubascos de lluvia violentos",
-        95: "Tormenta eléctrica", 96: "Tormenta con granizo débil", 99: "Tormenta con granizo fuerte"
-    },
-    en: {
-        0: "Clear sky",
-        1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
-        45: "Fog", 48: "Depositing rime fog",
-        51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
-        61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
-        71: "Slight snow fall", 73: "Moderate snow fall", 75: "Heavy snow fall",
-        80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
-        95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail"
-    },
-    pt: {
-        0: "Céu limpo",
-        1: "Principalmente limpo", 2: "Parcialmente nublado", 3: "Encoberto",
-        45: "Nevoeiro", 48: "Nevoeiro com formação de geada",
-        51: "Chuvisco leve", 53: "Chuvisco moderado", 55: "Chuvisco denso",
-        61: "Chuva fraca", 63: "Chuva moderada", 65: "Chuva forte",
-        71: "Queda de neve leve", 73: "Queda de neve moderada", 75: "Queda de neve forte",
-        80: "Aguaceiros fracos", 81: "Aguaceiros moderados", 82: "Aguaceiros violentos",
-        95: "Trovoada", 96: "Trovoada com granizo fraco", 99: "Trovoada com granizo forte"
+// MAPEO DE CÓDIGOS DE CLIMA (WMO de Open-Meteo a Códigos de Iconos de AccuWeather)
+function getAccuWeatherIconAndText(wmoCode, isDay = true) {
+    // Retorna { icon: string, text: string }
+    switch (wmoCode) {
+        case 0: // Cielo despejado
+            return { icon: isDay ? "1" : "33", text: isDay ? "Soleado" : "Despejado" };
+        case 1:
+        case 2: // Parcialmente nublado
+            return { icon: isDay ? "2" : "34", text: "Parcialmente nublado" };
+        case 3: // Nublado
+            return { icon: isDay ? "6" : "38", text: "Nublado" };
+        case 45:
+        case 48: // Niebla
+            return { icon: "11", text: "Niebla" };
+        case 51:
+        case 53:
+        case 55: // Llovizna
+            return { icon: "12", text: "Llovizna" };
+        case 56:
+        case 57: // Llovizna helada
+            return { icon: "26", text: "Llovizna helada" };
+        case 61:
+        case 63: // Lluvia ligera/moderada
+            return { icon: "18", text: "Lluvia" };
+        case 65: // Lluvia fuerte
+            return { icon: "18", text: "Lluvia fuerte" };
+        case 66:
+        case 67: // Lluvia helada
+            return { icon: "26", text: "Lluvia helada" };
+        case 71:
+        case 73:
+        case 75: // Nieve
+            return { icon: "22", text: "Nevada" };
+        case 77: // Granizo de nieve
+            return { icon: "22", text: "Granizo fino" };
+        case 80:
+        case 81:
+        case 82: // Chubascos de lluvia
+            return { icon: "12", text: "Chubascos" };
+        case 85:
+        case 86: // Chubascos de nieve
+            return { icon: "22", text: "Chubascos de nieve" };
+        case 95: // Tormenta eléctrica
+            return { icon: "15", text: "Tormenta eléctrica" };
+        case 96:
+        case 99: // Tormenta con granizo
+            return { icon: "15", text: "Tormenta con granizo" };
+        default:
+            return { icon: isDay ? "1" : "33", text: "Despejado" };
     }
-};
-
-// Función auxiliar para realizar peticiones HTTPS (a Open-Meteo)
-function fetchJSON(apiUrl) {
-    return new Promise((resolve, reject) => {
-        https.get(apiUrl, { headers: { 'User-Agent': 'SamsungWeatherProxy/1.0' } }, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                try {
-                    resolve(JSON.parse(data));
-                } catch (e) {
-                    reject(e);
-                }
-            });
-        }).on('error', reject);
-    });
 }
 
-// Generador de XML estilo AccuWeather (2014)
-function generarXMLAccuWeather(temp, condicion, ciudad = "Mi Ciudad") {
-    return `<?xml version="1.0" encoding="utf-8" ?>
-<adc_database>
-  <local>
-    <city>${ciudad}</city>
-    <adminArea code="LOCAL">Proxy Server</adminArea>
-    <country code="LOC">Proxy</country>
-  </local>
-  <currentconditions>
-    <temperature>${Math.round(temp)}</temperature>
-    <weathertext>${condicion}</weathertext>
-    <humidity>60</humidity>
-    <windspeed>10</windspeed>
-    <winddirection>N</winddirection>
-    <pressure>1013</pressure>
-    <realfeel>${Math.round(temp)}</realfeel>
-  </currentconditions>
-</adc_database>`;
-}
-
-// Generador de JSON estilo AccuWeather (2014) por si acaso el widget prefiere JSON
-function generarJSONAccuWeather(temp, condicion, ciudad = "Mi Ciudad") {
-    return JSON.stringify({
-        Local: {
-            City: ciudad
-        },
-        CurrentConditions: {
-            Temperature: Math.round(temp),
-            WeatherText: condicion,
-            RealFeel: Math.round(temp),
-            Humidity: "60"
-        }
-    });
-}
-
-// Crear el servidor HTTP
-const server = http.createServer(async (req, res) => {
-    const parsedUrl = url.parse(req.url, true);
-    console.log(`[Petición recibida] ${req.method} ${parsedUrl.pathname}`);
-
-    // Permitir CORS por si el widget lo requiere
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-
-    if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
-        return;
-    }
-
+// 1. ENDPOINT DE GEOPOSICIÓN (Búsqueda por coordenadas del GPS del teléfono)
+// Ruta esperada: /locations/v1/cities/geoposition/search.json
+app.get('/locations/v1/cities/geoposition/search.json', async (req, res) => {
     try {
-        // Intentamos extraer latitud y longitud si el widget las envía en la URL
-        let lat = parsedUrl.query.lat || parsedUrl.query.latitude || DEFAULT_LAT;
-        let lon = parsedUrl.query.lon || parsedUrl.query.longitude || DEFAULT_LON;
+        const query = req.query.q; // Formato: "latitude,longitude" (ej: "40.41,-3.70")
+        if (!query) {
+            return res.status(400).json({ error: "Falta parámetro 'q'" });
+        }
 
-        // Detectar idioma preferido del dispositivo
-        let idioma = "es"; // Por defecto en español
-        const parametroIdioma = parsedUrl.query.lang || parsedUrl.query.locale || parsedUrl.query.language || req.headers['accept-language'];
-        
-        if (parametroIdioma) {
-            // Extraer las dos primeras letras (ej. "en-US" -> "en")
-            const match = parametroIdioma.toLowerCase().match(/^([a-z]{2})/);
-            if (match && CLIMA_CODIGOS[match[1]]) {
-                idioma = match[1];
-                console.log(` -> Idioma detectado en dispositivo: ${idioma.toUpperCase()}`);
-            } else {
-                // Si el idioma no está soportado en nuestro diccionario, usar inglés por seguridad
-                idioma = "en";
+        const [lat, lon] = query.split(',');
+        console.log(`Petición GPS recibida para Lat: ${lat}, Lon: ${lon}`);
+
+        // Opcional: Intentamos reverse geocoding con OpenStreetMap (Nominatim) para obtener el nombre real de la ciudad.
+        // Si falla o tarda, usamos nombres genéricos para no romper la app.
+        let cityName = "Ubicación Actual";
+        let stateName = "Tu Región";
+        let countryName = "Tu País";
+
+        try {
+            const geoRes = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`, {
+                headers: { 'User-Agent': 'SamsungTouchWizWeatherReviver/1.0' }
+            });
+            if (geoRes.data && geoRes.data.address) {
+                cityName = geoRes.data.address.city || geoRes.data.address.town || geoRes.data.address.village || cityName;
+                stateName = geoRes.data.address.state || geoRes.data.address.county || stateName;
+                countryName = geoRes.data.address.country || countryName;
             }
+        } catch (err) {
+            console.log("No se pudo obtener el nombre de la ciudad vía geocoding, usando fallbacks genéricos.");
         }
 
-        // Llamar a la API de Open-Meteo
-        const openMeteoUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`;
-        const weatherData = await fetchJSON(openMeteoUrl);
+        // Codificamos las coordenadas en la Key para recuperarlas sin base de datos
+        const encodedKey = `${lat}_${lon}`;
 
-        if (!weatherData.current_weather) {
-            throw new Error("No se recibieron datos válidos de Open-Meteo");
-        }
+        // Estructura exacta esperada por parseDetailWeatherLocation
+        const responseLocation = {
+            "Key": encodedKey,
+            "LocalizedName": cityName,
+            "EnglishName": cityName,
+            "Country": {
+                "ID": "XX",
+                "LocalizedName": countryName,
+                "EnglishName": countryName
+            },
+            "AdministrativeArea": {
+                "ID": "XX",
+                "LocalizedName": stateName,
+                "EnglishName": stateName
+            }
+        };
 
-        const temp = weatherData.current_weather.temperature;
-        const codigoClima = weatherData.current_weather.weathercode;
-        
-        // Obtener la condición traducida según el idioma del dispositivo
-        const condicion = CLIMA_CODIGOS[idioma][codigoClima] || CLIMA_CODIGOS[idioma][0];
-
-        // Detectar si el widget pide XML o JSON basándonos en la ruta o cabeceras
-        const quiereXML = parsedUrl.pathname.includes('.asp') || 
-                          parsedUrl.pathname.includes('.xml') || 
-                          (req.headers.accept && req.headers.accept.includes('xml'));
-
-        if (quiereXML) {
-            console.log(` -> Respondiendo con XML (Temp: ${temp}°C, Condición: ${condicion})`);
-            res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
-            res.end(generarXMLAccuWeather(temp, condicion));
-        } else {
-            console.log(` -> Respondiendo con JSON (Temp: ${temp}°C, Condición: ${condicion})`);
-            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(generarJSONAccuWeather(temp, condicion));
-        }
+        res.json(responseLocation);
 
     } catch (error) {
-        console.error(" Error procesando el clima:", error.message);
-        // Respuesta de emergencia para evitar que el widget crashee por completo
-        res.writeHead(200, { 'Content-Type': 'application/xml' });
-        res.end(generarXMLAccuWeather(20, "Servicio en Mantenimiento"));
+        console.error("Error en geoposition search:", error);
+        res.status(500).json({ error: "Error interno del servidor" });
     }
 });
 
-// Iniciar servidor
-server.listen(PORT, () => {
-    console.log(`====================================================`);
-    console.log(`  MICRO-SERVIDOR ACCUWEATHER PROXY ACTIVO`);
-    console.log(`  Escuchando en el puerto: ${PORT}`);
-    console.log(`  Para pruebas en el navegador: http://localhost:${PORT}`);
-    console.log(`====================================================`);
+// 2. ENDPOINT DE CLIMA DETALLADO Y PRONÓSTICO (El que alimenta directamente al widget y detalle)
+// Ruta esperada: /localweather/v1/:location
+app.get('/localweather/v1/:location', async (req, res) => {
+    try {
+        const locationKey = req.params.location; // Espera nuestra clave codificada "lat_lon"
+        
+        // Coordenadas por defecto (por si acaso no viene en formato lat_lon)
+        let lat = 40.41;
+        let lon = -3.70;
+        let cityNameQuery = "Madrid";
+
+        if (locationKey && locationKey.includes('_')) {
+            const parts = locationKey.split('_');
+            lat = parseFloat(parts[0]);
+            lon = parseFloat(parts[1]);
+        }
+
+        // Intentamos geocodificar al revés para construir el buscador de AccuWeather con el nombre real de la ciudad
+        let displayCity = "Tu Ciudad";
+        try {
+            const geoRes = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`, {
+                headers: { 'User-Agent': 'SamsungTouchWizWeatherReviver/1.0' }
+            });
+            if (geoRes.data && geoRes.data.address) {
+                displayCity = geoRes.data.address.city || geoRes.data.address.town || geoRes.data.address.village || displayCity;
+                cityNameQuery = displayCity;
+            }
+        } catch (e) {}
+
+        // Consultamos el clima real y pronóstico semanal (7 días) usando Open-Meteo
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,is_day,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max&timezone=auto`;
+        const weatherResponse = await axios.get(weatherUrl);
+        const data = weatherResponse.data;
+
+        // Extraemos condiciones actuales
+        const currentWmo = data.current.weather_code;
+        const isDay = data.current.is_day === 1;
+        const currentMapping = getAccuWeatherIconAndText(currentWmo, isDay);
+
+        // Generamos el enlace real de AccuWeather para cuando el usuario pulse el widget
+        const realAccuWeatherLink = `https://www.accuweather.com/es/search-locations?query=${encodeURIComponent(cityNameQuery)}`;
+
+        // Construimos el arreglo de 7 días exactos que requiere el bucle de Samsung
+        const dailyForecasts = [];
+        for (let i = 0; i < 7; i++) {
+            const dayWmo = data.daily.weather_code[i] !== undefined ? data.daily.weather_code[i] : 0;
+            const dayMapping = getAccuWeatherIconAndText(dayWmo, true);
+            const nightMapping = getAccuWeatherIconAndText(dayWmo, false);
+
+            const minTemp = data.daily.temperature_2m_min[i] !== undefined ? Math.round(data.daily.temperature_2m_min[i]) : 15;
+            const maxTemp = data.daily.temperature_2m_max[i] !== undefined ? Math.round(data.daily.temperature_2m_max[i]) : 25;
+
+            // Formato de hora ISO a am/pm básico para el parser del Sol (Sunrise/Sunset)
+            const rawSunrise = data.daily.sunrise[i] ? new Date(data.daily.sunrise[i]) : new Date();
+            const rawSunset = data.daily.sunset[i] ? new Date(data.daily.sunset[i]) : new Date();
+
+            const formatTime = (dateObj) => {
+                let hours = dateObj.getHours();
+                const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+                const ampm = hours >= 12 ? 'PM' : 'AM';
+                hours = hours % 12;
+                hours = hours ? hours : 12; // el número '0' debería ser '12'
+                return `2026-06-21T${String(hours).padStart(2, '0')}:${minutes}:00-00:00`; // El parser hace substring(11, 13) y (14, 16)
+            };
+
+            dailyForecasts.push({
+                "MobileLink": realAccuWeatherLink,
+                "Temperature": {
+                    "Minimum": { "Value": String(minTemp) },
+                    "Maximum": { "Value": String(maxTemp) }
+                },
+                "Sun": {
+                    "Rise": formatTime(rawSunrise),
+                    "Set": formatTime(rawSunset)
+                },
+                "Day": {
+                    "Icon": parseInt(dayMapping.icon),
+                    "Rain": { "Value": 0.0 },
+                    "Snow": { "Value": 0.0 },
+                    "Ice": { "Value": 0.0 },
+                    "TotalLiquid": { "Value": 0.0 },
+                    "RainProbability": 10,
+                    "SnowProbability": 0,
+                    "IceProbability": 0,
+                    "PrecipitationProbability": 10
+                },
+                "Night": {
+                    "Icon": parseInt(nightMapping.icon),
+                    "Rain": { "Value": 0.0 },
+                    "Snow": { "Value": 0.0 },
+                    "Ice": { "Value": 0.0 },
+                    "TotalLiquid": { "Value": 0.0 },
+                    "RainProbability": 5,
+                    "SnowProbability": 0,
+                    "IceProbability": 0,
+                    "PrecipitationProbability": 5
+                }
+            });
+        }
+
+        // Construcción de la estructura JSON exacta parseada por 'AccuWeatherJsonParser.java'
+        const samsungJSONResponse = {
+            "Location": {
+                "Key": locationKey,
+                "TimeZone": {
+                    "GmtOffset": "0.0", // Se ajustará automáticamente con los desfases de fecha
+                    "IsDaylightSaving": "False"
+                }
+            },
+            "CurrentConditions": {
+                "WeatherText": currentMapping.text,
+                "WeatherIcon": currentMapping.icon,
+                "Temperature": {
+                    "Value": String(Math.round(data.current.temperature_2m))
+                },
+                "RealFeelTemperature": {
+                    "Value": String(Math.round(data.current.temperature_2m)) // En Open-Meteo básico duplicamos la temp
+                },
+                "MobileLink": realAccuWeatherLink,
+                "RelativeHumidity": String(data.current.relative_humidity_2m),
+                "UVIndex": data.daily.uv_index_max[0] ? Math.round(data.daily.uv_index_max[0]) : 3,
+                "UVIndexText": "Moderado",
+                "Photos": [] // Campo parseado obligatoriamente
+            },
+            "ForecastSummary": {
+                "DailyForecasts": dailyForecasts
+            }
+        };
+
+        res.json(samsungJSONResponse);
+
+    } catch (error) {
+        console.error("Error al procesar el clima:", error);
+        res.status(500).json({ error: "Error interno procesando datos del clima" });
+    }
 });
+
+// Puerto dinámico asignado por Render
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Servidor de Clima TouchWiz escuchando en puerto ${PORT}`);
+});
+`
