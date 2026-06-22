@@ -555,11 +555,3 @@ eof
 }
 ```
 eof
-
-### Configuración final en el panel de Render:
-Al configurar tu "Web Service" en la plataforma de Render, asegúrate de que estos dos ajustes coincidan exactamente:
-
-1. **Build Command:** `npm install` (y nada más, deja vacío cualquier script de build complejo).
-2. **Start Command:** `npm start` (o `node server.js`).
-
-Guarda los archivos, realiza el commit y push correspondientes. Render debería compilar e iniciar el servidor limpiamente y sin errores de salida ahora. ¿Me cuentas si este despliegue por fin se completa con éxito?
