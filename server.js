@@ -5,8 +5,8 @@ const http = require('http');
 const https = require('https');
 const url = require('url');
 
-// Configuración del servidor
-const PORT = 8080; 
+// Configuración del servidor (Render asigna dinámicamente el puerto usando process.env.PORT)
+const PORT = process.env.PORT || 8080; 
 const DEFAULT_LAT = "40.7128"; // Nueva York por defecto si el widget no envía coordenadas
 const DEFAULT_LON = "-74.0060";
 
