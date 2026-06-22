@@ -10,7 +10,6 @@ app.use((req, res, next) => {
 
 // MAPEO DE CÓDIGOS DE CLIMA (WMO de Open-Meteo a Códigos de Iconos de AccuWeather)
 function getAccuWeatherIconAndText(wmoCode, isDay = true) {
-    // Retorna { icon: string, text: string }
     switch (wmoCode) {
         case 0: // Cielo despejado
             return { icon: isDay ? "1" : "33", text: isDay ? "Soleado" : "Despejado" };
@@ -61,10 +60,9 @@ function getAccuWeatherIconAndText(wmoCode, isDay = true) {
 }
 
 // 1. ENDPOINT DE GEOPOSICIÓN (Búsqueda por coordenadas del GPS del teléfono)
-// Ruta esperada: /locations/v1/cities/geoposition/search.json
 app.get('/locations/v1/cities/geoposition/search.json', async (req, res) => {
     try {
-        const query = req.query.q; // Formato: "latitude,longitude" (ej: "40.41,-3.70")
+        const query = req.query.q; // Formato: "latitude,longitude"
         if (!query) {
             return res.status(400).json({ error: "Falta parámetro 'q'" });
         }
@@ -72,8 +70,6 @@ app.get('/locations/v1/cities/geoposition/search.json', async (req, res) => {
         const [lat, lon] = query.split(',');
         console.log(`Petición GPS recibida para Lat: ${lat}, Lon: ${lon}`);
 
-        // Opcional: Intentamos reverse geocoding con OpenStreetMap (Nominatim) para obtener el nombre real de la ciudad.
-        // Si falla o tarda, usamos nombres genéricos para no romper la app.
         let cityName = "Ubicación Actual";
         let stateName = "Tu Región";
         let countryName = "Tu País";
@@ -91,10 +87,8 @@ app.get('/locations/v1/cities/geoposition/search.json', async (req, res) => {
             console.log("No se pudo obtener el nombre de la ciudad vía geocoding, usando fallbacks genéricos.");
         }
 
-        // Codificamos las coordenadas en la Key para recuperarlas sin base de datos
         const encodedKey = `${lat}_${lon}`;
 
-        // Estructura exacta esperada por parseDetailWeatherLocation
         const responseLocation = {
             "Key": encodedKey,
             "LocalizedName": cityName,
@@ -119,13 +113,11 @@ app.get('/locations/v1/cities/geoposition/search.json', async (req, res) => {
     }
 });
 
-// 2. ENDPOINT DE CLIMA DETALLADO Y PRONÓSTICO (El que alimenta directamente al widget y detalle)
-// Ruta esperada: /localweather/v1/:location
+// 2. ENDPOINT DE CLIMA DETALLADO Y PRONÓSTICO (Alimenta el widget)
 app.get('/localweather/v1/:location', async (req, res) => {
     try {
-        const locationKey = req.params.location; // Espera nuestra clave codificada "lat_lon"
+        const locationKey = req.params.location; // "lat_lon"
         
-        // Coordenadas por defecto (por si acaso no viene en formato lat_lon)
         let lat = 40.41;
         let lon = -3.70;
         let cityNameQuery = "Madrid";
@@ -136,7 +128,6 @@ app.get('/localweather/v1/:location', async (req, res) => {
             lon = parseFloat(parts[1]);
         }
 
-        // Intentamos geocodificar al revés para construir el buscador de AccuWeather con el nombre real de la ciudad
         let displayCity = "Tu Ciudad";
         try {
             const geoRes = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`, {
@@ -148,20 +139,16 @@ app.get('/localweather/v1/:location', async (req, res) => {
             }
         } catch (e) {}
 
-        // Consultamos el clima real y pronóstico semanal (7 días) usando Open-Meteo
         const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,is_day,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,uv_index_max&timezone=auto`;
         const weatherResponse = await axios.get(weatherUrl);
         const data = weatherResponse.data;
 
-        // Extraemos condiciones actuales
         const currentWmo = data.current.weather_code;
         const isDay = data.current.is_day === 1;
         const currentMapping = getAccuWeatherIconAndText(currentWmo, isDay);
 
-        // Generamos el enlace real de AccuWeather para cuando el usuario pulse el widget
         const realAccuWeatherLink = `https://www.accuweather.com/es/search-locations?query=${encodeURIComponent(cityNameQuery)}`;
 
-        // Construimos el arreglo de 7 días exactos que requiere el bucle de Samsung
         const dailyForecasts = [];
         for (let i = 0; i < 7; i++) {
             const dayWmo = data.daily.weather_code[i] !== undefined ? data.daily.weather_code[i] : 0;
@@ -171,7 +158,6 @@ app.get('/localweather/v1/:location', async (req, res) => {
             const minTemp = data.daily.temperature_2m_min[i] !== undefined ? Math.round(data.daily.temperature_2m_min[i]) : 15;
             const maxTemp = data.daily.temperature_2m_max[i] !== undefined ? Math.round(data.daily.temperature_2m_max[i]) : 25;
 
-            // Formato de hora ISO a am/pm básico para el parser del Sol (Sunrise/Sunset)
             const rawSunrise = data.daily.sunrise[i] ? new Date(data.daily.sunrise[i]) : new Date();
             const rawSunset = data.daily.sunset[i] ? new Date(data.daily.sunset[i]) : new Date();
 
@@ -180,8 +166,8 @@ app.get('/localweather/v1/:location', async (req, res) => {
                 const minutes = String(dateObj.getMinutes()).padStart(2, '0');
                 const ampm = hours >= 12 ? 'PM' : 'AM';
                 hours = hours % 12;
-                hours = hours ? hours : 12; // el número '0' debería ser '12'
-                return `2026-06-21T${String(hours).padStart(2, '0')}:${minutes}:00-00:00`; // El parser hace substring(11, 13) y (14, 16)
+                hours = hours ? hours : 12;
+                return `2026-06-21T${String(hours).padStart(2, '0')}:${minutes}:00-00:00`;
             };
 
             dailyForecasts.push({
@@ -219,12 +205,11 @@ app.get('/localweather/v1/:location', async (req, res) => {
             });
         }
 
-        // Construcción de la estructura JSON exacta parseada por 'AccuWeatherJsonParser.java'
         const samsungJSONResponse = {
             "Location": {
                 "Key": locationKey,
                 "TimeZone": {
-                    "GmtOffset": "0.0", // Se ajustará automáticamente con los desfases de fecha
+                    "GmtOffset": "0.0",
                     "IsDaylightSaving": "False"
                 }
             },
@@ -235,13 +220,13 @@ app.get('/localweather/v1/:location', async (req, res) => {
                     "Value": String(Math.round(data.current.temperature_2m))
                 },
                 "RealFeelTemperature": {
-                    "Value": String(Math.round(data.current.temperature_2m)) // En Open-Meteo básico duplicamos la temp
+                    "Value": String(Math.round(data.current.temperature_2m))
                 },
                 "MobileLink": realAccuWeatherLink,
                 "RelativeHumidity": String(data.current.relative_humidity_2m),
                 "UVIndex": data.daily.uv_index_max[0] ? Math.round(data.daily.uv_index_max[0]) : 3,
                 "UVIndexText": "Moderado",
-                "Photos": [] // Campo parseado obligatoriamente
+                "Photos": []
             },
             "ForecastSummary": {
                 "DailyForecasts": dailyForecasts
@@ -256,9 +241,38 @@ app.get('/localweather/v1/:location', async (req, res) => {
     }
 });
 
-// Puerto dinámico asignado por Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Servidor de Clima TouchWiz escuchando en puerto ${PORT}`);
 });
-`
+```
+eof
+
+```json:Configuración de Render:package.json
+{
+  "name": "touchwiz-weather-server",
+  "version": "1.0.0",
+  "description": "Servidor para revivir widgets de clima TouchWiz antiguos",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true
+}
+```
+eof
+
+### Configuración final en el panel de Render:
+Al configurar tu "Web Service" en la plataforma de Render, asegúrate de que estos dos ajustes coincidan exactamente:
+
+1. **Build Command:** `npm install` (y nada más, deja vacío cualquier script de build complejo).
+2. **Start Command:** `npm start` (o `node server.js`).
+
+Guarda los archivos, realiza el commit y push correspondientes. Render debería compilar e iniciar el servidor limpiamente y sin errores de salida ahora. ¿Me cuentas si este despliegue por fin se completa con éxito?
